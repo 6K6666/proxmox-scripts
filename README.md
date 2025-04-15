@@ -11,7 +11,9 @@ nano /etc/pve/qemu-server/<vmid>.conf
 In the editor, let's add these command lines (doesn't matter where you add them, so long as they are on new lines. Proxmox will move things around for you after you save):
 
 machine: q35
+
 cpu: host,hidden=1,flags=+pcid
+
 args: -cpu 'host,+kvm_pv_unhalt,+kvm_pv_eoi,hv_vendor_id=NV43FIX,kvm=off'
 
 credit to this reddit thread for inspiration for this script: https://www.reddit.com/r/homelab/comments/b5xpua/the_ultimate_beginners_guide_to_gpu_passthrough/
