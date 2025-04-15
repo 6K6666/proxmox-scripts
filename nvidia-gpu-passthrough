@@ -1,0 +1,112 @@
+#!/bin/bash
+
+# Simple colors
+GREEN="\033[1;32m"
+RED="\033[1;31m"
+RESET="\033[0m"
+
+echo -e "${GREEN}===== Proxmox GPU Passthrough Setup Script (NVIDIA only) =====${RESET}"
+echo
+
+# Step 1: Configure GRUB
+echo -e "Step 1: Configuring GRUB for IOMMU..."
+GRUB_FILE="/etc/default/grub"
+if grep -q 'intel_iommu=on' "$GRUB_FILE"; then
+    echo -e "${GREEN}-> GRUB already configured with intel_iommu=on${RESET}"
+else
+    sed -i 's/GRUB_CMDLINE_LINUX_DEFAULT="[^"]*/& intel_iommu=on/' "$GRUB_FILE"
+    echo -e "${GREEN}-> Added intel_iommu=on to GRUB config${RESET}"
+    update-grub
+    echo -e "${GREEN}-> Ran update-grub${RESET}"
+fi
+echo
+
+# Step 2: Load VFIO Modules
+echo -e "Step 2: Adding VFIO modules to /etc/modules..."
+MODULES_FILE="/etc/modules"
+for mod in vfio vfio_iommu_type1 vfio_pci vfio_virqfd; do
+    if ! grep -q "^$mod$" "$MODULES_FILE"; then
+        echo "$mod" >> "$MODULES_FILE"
+        echo -e "${GREEN}-> Added $mod${RESET}"
+    else
+        echo -e "${GREEN}-> $mod already present${RESET}"
+    fi
+done
+echo
+
+# Step 3: IOMMU + KVM Config
+echo -e "Step 3: Creating modprobe config for IOMMU and KVM..."
+echo "options vfio_iommu_type1 allow_unsafe_interrupts=1" > /etc/modprobe.d/iommu_unsafe_interrupts.conf
+echo "options kvm ignore_msrs=1" > /etc/modprobe.d/kvm.conf
+echo -e "${GREEN}-> Configs written to /etc/modprobe.d/iommu_unsafe_interrupts.conf and kvm.conf${RESET}"
+echo
+
+# Step 4: Blacklisting drivers
+echo -e "Step 4: Blacklisting stock GPU drivers..."
+BLACKLIST_FILE="/etc/modprobe.d/blacklist.conf"
+for driver in radeon nouveau nvidia; do
+    if ! grep -q "^blacklist $driver" "$BLACKLIST_FILE" 2>/dev/null; then
+        echo "blacklist $driver" >> "$BLACKLIST_FILE"
+        echo -e "${GREEN}-> Blacklisted $driver${RESET}"
+    else
+        echo -e "${GREEN}-> $driver already blacklisted${RESET}"
+    fi
+done
+echo
+
+# Step 5: Auto-detect NVIDIA GPU & Audio vendor IDs
+echo -e "Step 5: Mapping GPU to VFIO..."
+echo -e "${GREEN}-> Scanning for NVIDIA GPU and audio devices...${RESET}"
+
+nvidia_devices=$(lspci -nn | grep -i nvidia)
+
+gpu_id=$(echo "$nvidia_devices" | grep -Ei "vga|3d controller" | grep -oP '\[\K[0-9a-f]{4}:[0-9a-f]{4}(?=\])' | head -n1)
+audio_id=$(echo "$nvidia_devices" | grep -i "audio" | grep -oP '\[\K[0-9a-f]{4}:[0-9a-f]{4}(?=\])' | head -n1)
+
+echo -e "${GREEN}Detected GPU ID: $gpu_id${RESET}"
+echo -e "${GREEN}Detected Audio ID: $audio_id${RESET}"
+echo
+
+read -p "Use these IDs? [Y/n]: " confirm
+if [[ "$confirm" =~ ^[Nn]$ ]]; then
+    echo
+    read -p "Enter GPU ID (e.g., 10de:1b81): " gpu_id
+    read -p "Enter Audio ID (e.g., 10de:10f0): " audio_id
+fi
+
+VFIO_FILE="/etc/modprobe.d/vfio.conf"
+vfio_line="options vfio-pci ids=${gpu_id},${audio_id} disable_vga=1"
+
+if [[ -f "$VFIO_FILE" ]] && grep -q "vfio-pci ids=" "$VFIO_FILE"; then
+    echo -e "${RED}-> Existing VFIO device binding found:${RESET}"
+    cat "$VFIO_FILE"
+    echo
+    read -p "Replace with new IDs? [y/N]: " replace_ids
+    if [[ "$replace_ids" =~ ^[Yy]$ ]]; then
+        echo "$vfio_line" > "$VFIO_FILE"
+        echo -e "${GREEN}-> Updated vfio.conf with new IDs${RESET}"
+    else
+        echo -e "${GREEN}-> Keeping existing vfio.conf unchanged${RESET}"
+    fi
+else
+    echo "$vfio_line" > "$VFIO_FILE"
+    echo -e "${GREEN}-> Wrote vfio-pci binding to $VFIO_FILE${RESET}"
+fi
+echo
+
+# Step 6: Update initramfs
+echo -e "Step 6: Updating initramfs..."
+update-initramfs -u
+echo -e "${GREEN}-> initramfs updated${RESET}"
+echo
+
+# Final step: reboot prompt
+echo -e "${GREEN}===== All done! Reboot to activate GPU passthrough. =====${RESET}"
+echo
+read -p "Would you like to reboot now? [y/N]: " reboot_confirm
+if [[ "$reboot_confirm" =~ ^[Yy]$ ]]; then
+    echo -e "${GREEN}Rebooting...${RESET}"
+    reboot
+else
+    echo -e "${GREEN}Reboot skipped. You can manually reboot later to apply changes.${RESET}"
+fi
